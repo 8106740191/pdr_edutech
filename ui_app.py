@@ -1,5 +1,6 @@
 import os
 import urllib.parse
+from datetime import date
 import streamlit as st
 import mysql.connector
 
@@ -12,7 +13,7 @@ st.set_page_config(
 
 # --- OWNER CREDENTIALS ---
 OWNER_USERNAME = "PraveenYapala"
-OWNER_PASSWORD = "Praven@#123"
+OWNER_PASSWORD = "Praveen@#123"
 
 # Folder for faculty profile pictures
 PROFILE_PIC_DIR = "faculty_pics"
@@ -21,13 +22,15 @@ DEFAULT_AVATAR = "https://cdn-icons-png.flaticon.com/512/3135/3135715.png"
 
 # --- CLOUD DATABASE CONNECTION (Uses Streamlit Secrets) ---
 def get_db_connection():
+   
     return mysql.connector.connect(
-        host=st.secrets["pg-c81cfe2-yapalapraveenreddy2002-169b.j.aivencloud.com"],
-        port=int(st.secrets["17441"]),
-        user=st.secrets["avnadmin"],
-        password=st.secrets["AVNS_UUP4iHpQpNoCYU0wM4z"],
-        database=st.secrets["defaultdb"]
+        host=st.secrets["DB_HOST"],
+        port=int(st.secrets["DB_PORT"]),
+        user=st.secrets["DB_USER"],
+        password=st.secrets["DB_PASSWORD"],
+        database=st.secrets["DB_NAME"]
     )
+    
 
 # --- AUTO-CREATE TABLES & SAMPLE COURSES ---
 def init_db():
@@ -64,6 +67,25 @@ def init_db():
                 mobile_number VARCHAR(20) NOT NULL,
                 course_name VARCHAR(100) NOT NULL,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS student_applications (
+                application_id INT AUTO_INCREMENT PRIMARY KEY,
+                inquiry_id INT UNIQUE,
+                course_name VARCHAR(100) NOT NULL,
+                full_name VARCHAR(100) NOT NULL,
+                gender VARCHAR(20) NOT NULL,
+                dob DATE,
+                category VARCHAR(30) NOT NULL,
+                education VARCHAR(100) NOT NULL,
+                marital_status VARCHAR(30) NOT NULL,
+                mobile_number VARCHAR(20) NOT NULL,
+                parent_mobile VARCHAR(20) NOT NULL,
+                address TEXT,
+                submitted_by VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -139,6 +161,33 @@ def fetch_courses():
     db.close()
     return rows
 
+def clean_cell(val):
+    if val is None or str(val).strip() == "":
+        return "-"
+    return str(val).replace("|", "/").replace("\n", " ").strip()
+
+def render_applications_table(apps):
+    if not apps:
+        return False
+    md = "| App ID | Full Name | Gender | DOB | Category | Education | Marital Status | Mobile | Parent Mobile | Address | Submitted At |\n"
+    md += "|---|---|---|---|---|---|---|---|---|---|---|\n"
+    for a in apps:
+        md += (
+            f"| {clean_cell(a['application_id'])} "
+            f"| {clean_cell(a['full_name'])} "
+            f"| {clean_cell(a['gender'])} "
+            f"| {clean_cell(a['dob'])} "
+            f"| {clean_cell(a['category'])} "
+            f"| {clean_cell(a['education'])} "
+            f"| {clean_cell(a['marital_status'])} "
+            f"| {clean_cell(a['mobile_number'])} "
+            f"| {clean_cell(a['parent_mobile'])} "
+            f"| {clean_cell(a['address'])} "
+            f"| {clean_cell(a['created_at'])} |\n"
+        )
+    st.markdown(md)
+    return True
+
 # --- COURSE IMAGES ---
 COURSE_IMAGES = {
     "PGDCA": "https://images.unsplash.com/photo-1517694712202-14dd9538aa97?w=600&q=80",
@@ -179,6 +228,8 @@ if "role" not in st.session_state:
     st.session_state.role = None  # None, "owner", or "faculty"
 if "faculty" not in st.session_state:
     st.session_state.faculty = None
+if "active_inquiry" not in st.session_state:
+    st.session_state.active_inquiry = None
 
 courses = fetch_courses()
 course_names = [c["course_name"] for c in courses]
@@ -191,7 +242,6 @@ def show_public_portal():
         st.markdown("## 🔐 Portal Login")
         tab_fac_login, tab_owner_login = st.tabs(["👨‍🏫 Faculty Login", "👑 Owner Login"])
 
-        # Faculty Login
         with tab_fac_login:
             with st.form("faculty_login_form", clear_on_submit=True):
                 f_user = st.text_input("👤 Faculty Username", placeholder="Enter username")
@@ -215,13 +265,13 @@ def show_public_portal():
                         if fac:
                             st.session_state.role = "faculty"
                             st.session_state.faculty = fac
+                            st.session_state.active_inquiry = None
                             st.rerun()
                         else:
                             st.error("❌ Invalid faculty credentials.")
                     except mysql.connector.Error as err:
                         st.error(f"DB Error: {err}")
 
-        # Owner Login
         with tab_owner_login:
             with st.form("owner_login_form", clear_on_submit=True):
                 o_user = st.text_input("👑 Owner Username", placeholder="Enter owner username")
@@ -235,7 +285,6 @@ def show_public_portal():
                 else:
                     st.error("❌ Invalid owner credentials.")
 
-    # --- MAIN PUBLIC PAGE ---
     st.markdown("""
     <div class="hero-banner">
         <h1>🎓 PDR Edutech & Admission Portal</h1>
@@ -243,7 +292,6 @@ def show_public_portal():
     </div>
     """, unsafe_allow_html=True)
 
-    # 1. ALL COURSES GRID (Visible to everyone)
     st.subheader("📚 Our Courses")
     cols = st.columns(3, gap="medium")
     for idx, course in enumerate(courses):
@@ -266,7 +314,6 @@ def show_public_portal():
 
     st.divider()
 
-    # 2. STUDENT INTEREST / INQUIRY FORM
     st.subheader("📩 Interested in a Course? Send Your Details to the Institute")
     col_form, col_info = st.columns([1.3, 1], gap="large")
 
@@ -305,7 +352,7 @@ def show_public_portal():
 
 
 # ==============================================================================
-# VIEW 2: OWNER DASHBOARD (COURSE-WISE STUDENTS + FACULTY REG + QR CODE)
+# VIEW 2: OWNER DASHBOARD (COURSE-WISE STUDENTS + APPLICATIONS + FACULTY + QR)
 # ==============================================================================
 def show_owner_dashboard():
     with st.sidebar:
@@ -320,26 +367,29 @@ def show_owner_dashboard():
     st.markdown("""
     <div class="hero-banner">
         <h1>👑 PDR Edutech — Owner Dashboard</h1>
-        <p>Monitor course-wise trainee counts, view individual course inquiries, register faculty, and generate your portal QR code.</p>
+        <p>Monitor course-wise trainee counts, view full student applications by course, register faculty, and generate your portal QR code.</p>
     </div>
     """, unsafe_allow_html=True)
 
     tab_overview, tab_reg_fac, tab_qr = st.tabs([
-        "📊 Course-wise Students",
+        "📊 Course-wise Students & Applications",
         "➕ Register & Manage Faculty",
         "📱 Site QR Code"
     ])
 
-    # --- TAB 1: COURSE-WISE STUDENT COUNTS & INDIVIDUAL COURSE VIEW ---
+    # --- TAB 1: COURSE-WISE COUNTS & FULL STUDENT DATA ---
     with tab_overview:
         try:
             db = get_db_connection()
             cursor = db.cursor(dictionary=True)
-
             cursor.execute("""
-                SELECT c.course_name, COUNT(s.inquiry_id) AS total_students
+                SELECT
+                    c.course_name,
+                    COUNT(DISTINCT s.inquiry_id) AS total_inquiries,
+                    COUNT(DISTINCT a.application_id) AS total_applications
                 FROM courses c
                 LEFT JOIN student_inquiries s ON c.course_name = s.course_name
+                LEFT JOIN student_applications a ON c.course_name = a.course_name
                 GROUP BY c.course_name
             """)
             counts = cursor.fetchall()
@@ -349,39 +399,57 @@ def show_owner_dashboard():
             st.error(f"Database Error: {err}")
             return
 
-        st.subheader("📈 Total Students by Course")
+        st.subheader("📈 Course-wise Summary")
         metric_cols = st.columns(3)
         for idx, row in enumerate(counts):
             with metric_cols[idx % 3]:
-                st.metric(f"📘 {row['course_name']}", f"{row['total_students']} Students")
+                st.metric(
+                    f"📘 {row['course_name']}",
+                    f"{row['total_inquiries']} Inquiries",
+                    f"{row['total_applications']} Applications Filled"
+                )
 
         st.divider()
 
-        st.subheader("📋 View Trainees by Course")
-        selected_course = st.selectbox("Select a Course to View Trainees", course_names)
+        st.subheader("📋 Select Course to View Full Student Data")
+        selected_course = st.selectbox("Select a Course", course_names)
 
         try:
             db = get_db_connection()
             cursor = db.cursor(dictionary=True)
+
+            cursor.execute(
+                "SELECT * FROM student_applications WHERE course_name = %s ORDER BY created_at DESC",
+                (selected_course,)
+            )
+            course_apps = cursor.fetchall()
+
             cursor.execute(
                 "SELECT inquiry_id, student_name, mobile_number, submitted_at FROM student_inquiries WHERE course_name = %s ORDER BY submitted_at DESC",
                 (selected_course,)
             )
-            course_students = cursor.fetchall()
+            course_inquiries = cursor.fetchall()
+
             cursor.close()
             db.close()
         except mysql.connector.Error as err:
             st.error(f"Database Error: {err}")
             return
 
-        if course_students:
-            table_md = "| ID | Trainee Name | Mobile Number | Submitted At |\n"
-            table_md += "|---|---|---|---|\n"
-            for row in course_students:
-                table_md += f"| {row['inquiry_id']} | {row['student_name']} | {row['mobile_number']} | {row['submitted_at']} |\n"
-            st.markdown(table_md)
-        else:
-            st.info(f"No students have registered interest in **{selected_course}** yet.")
+        st.markdown(f"#### 📄 Full Student Applications — {selected_course} ({len(course_apps)})")
+        if not render_applications_table(course_apps):
+            st.info(f"No full applications submitted for **{selected_course}** yet.")
+
+        st.write("")
+        with st.expander(f"📩 Raw Student Inquiries — {selected_course} ({len(course_inquiries)})"):
+            if course_inquiries:
+                table_md = "| ID | Trainee Name | Mobile Number | Submitted At |\n"
+                table_md += "|---|---|---|---|\n"
+                for row in course_inquiries:
+                    table_md += f"| {row['inquiry_id']} | {clean_cell(row['student_name'])} | {clean_cell(row['mobile_number'])} | {row['submitted_at']} |\n"
+                st.markdown(table_md)
+            else:
+                st.info(f"No inquiries received for **{selected_course}** yet.")
 
     # --- TAB 2: REGISTER FACULTY (OWNER ONLY) ---
     with tab_reg_fac:
@@ -432,7 +500,7 @@ def show_owner_dashboard():
                     fac_md = "| ID | Faculty Name | Username | Assigned Course |\n"
                     fac_md += "|---|---|---|---|\n"
                     for f in all_fac:
-                        fac_md += f"| {f['faculty_id']} | {f['full_name']} | `{f['username']}` | {f['course_name']} |\n"
+                        fac_md += f"| {f['faculty_id']} | {clean_cell(f['full_name'])} | `{f['username']}` | {clean_cell(f['course_name'])} |\n"
                     st.markdown(fac_md)
                 else:
                     st.info("No faculty members registered yet.")
@@ -455,7 +523,7 @@ def show_owner_dashboard():
 
 
 # ==============================================================================
-# VIEW 3: FACULTY DASHBOARD (ONLY SHOWS STUDENTS INTERESTED IN THEIR COURSE)
+# VIEW 3: FACULTY DASHBOARD (INQUIRIES + APPLICATION FORM + FULL RECORDS TABLE)
 # ==============================================================================
 def show_faculty_dashboard():
     fac = st.session_state.faculty
@@ -470,43 +538,169 @@ def show_faculty_dashboard():
         if st.button("🚪 Logout", use_container_width=True):
             st.session_state.role = None
             st.session_state.faculty = None
+            st.session_state.active_inquiry = None
             st.rerun()
 
     st.markdown(f"""
     <div class="hero-banner">
         <h1>👨‍🏫 {assigned_course} — Faculty Dashboard</h1>
-        <p>Welcome, {fac['full_name']}. Below are the trainees who expressed interest in <b>{assigned_course}</b>.</p>
+        <p>Welcome, {fac['full_name']}. Manage inquiries and fill full student admission applications for <b>{assigned_course}</b>.</p>
     </div>
     """, unsafe_allow_html=True)
 
     try:
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
+
         cursor.execute(
             "SELECT inquiry_id, student_name, mobile_number, course_name, submitted_at FROM student_inquiries WHERE course_name = %s ORDER BY submitted_at DESC",
             (assigned_course,)
         )
         inquiries = cursor.fetchall()
+
+        cursor.execute(
+            "SELECT * FROM student_applications WHERE course_name = %s ORDER BY created_at DESC",
+            (assigned_course,)
+        )
+        applications = cursor.fetchall()
+
         cursor.close()
         db.close()
     except mysql.connector.Error as err:
         st.error(f"Database Error: {err}")
         return
 
-    tab_leads, tab_profile = st.tabs([f"📋 Interested Trainees ({len(inquiries)})", "👤 Faculty Profile"])
+    filled_map = {a["inquiry_id"]: a for a in applications}
 
+    tab_leads, tab_full_data, tab_profile = st.tabs([
+        f"📋 Interested Trainees ({len(inquiries)})",
+        f"📄 Full Applications Table ({len(applications)})",
+        "👤 Faculty Profile"
+    ])
+
+    # --- TAB 1: INQUIRIES LIST WITH "FILL APPLICATION FORM" BUTTON BESIDE EACH STUDENT ---
     with tab_leads:
-        st.metric(f"📩 Total Inquiries for {assigned_course}", len(inquiries))
-        st.write("")
+        c1, c2 = st.columns(2)
+        c1.metric(f"📩 Total Inquiries ({assigned_course})", len(inquiries))
+        c2.metric("📝 Applications Completed", len(applications))
+        st.divider()
+
         if inquiries:
-            table_md = "| ID | Trainee Name | Mobile Number | Course | Submitted At |\n"
-            table_md += "|---|---|---|---|---|\n"
+            h1, h2, h3, h4, h5 = st.columns([0.7, 2.2, 1.8, 2, 1.8])
+            h1.markdown("**ID**")
+            h2.markdown("**Trainee Name**")
+            h3.markdown("**Mobile Number**")
+            h4.markdown("**Submitted At**")
+            h5.markdown("**Application Form**")
+            st.markdown("---")
+
             for row in inquiries:
-                table_md += f"| {row['inquiry_id']} | {row['student_name']} | {row['mobile_number']} | {row['course_name']} | {row['submitted_at']} |\n"
-            st.markdown(table_md)
+                inq_id = row["inquiry_id"]
+                is_filled = inq_id in filled_map
+                col1, col2, col3, col4, col5 = st.columns([0.7, 2.2, 1.8, 2, 1.8])
+                col1.write(inq_id)
+                col2.write(row["student_name"])
+                col3.write(row["mobile_number"])
+                col4.write(str(row["submitted_at"]))
+
+                btn_label = "✏️ Edit Form" if is_filled else "📝 Fill Application"
+                btn_type = "secondary" if is_filled else "primary"
+                if col5.button(btn_label, key=f"fill_btn_{inq_id}", type=btn_type, use_container_width=True):
+                    st.session_state.active_inquiry = row
         else:
             st.info(f"No student inquiries received for **{assigned_course}** yet.")
 
+        # --- APPLICATION FORM MODAL / SECTION ---
+        if st.session_state.active_inquiry is not None:
+            sel = st.session_state.active_inquiry
+            existing = filled_map.get(sel["inquiry_id"])
+
+            st.divider()
+            with st.container(border=True):
+                st.subheader(f"📝 Student Application Form — {sel['student_name']} ({assigned_course})")
+
+                gender_opts = ["Male", "Female", "Other"]
+                cat_opts = ["OC", "BC-A", "BC-B", "BC-C", "BC-D", "BC-E", "SC", "ST", "EWS", "Other"]
+                edu_opts = ["SSC (10th)", "Intermediate (12th)", "ITI / Diploma", "Degree (BSc/BCom/BA/BTech)", "Post Graduation (MCA/MSc/MBA)", "Other"]
+                marital_opts = ["Single", "Married", "Other"]
+
+                def get_idx(options, value):
+                    return options.index(value) if value in options else 0
+
+                with st.form("faculty_student_application_form"):
+                    fc1, fc2 = st.columns(2)
+                    with fc1:
+                        app_name = st.text_input("🪪 Full Name *", value=existing["full_name"] if existing else sel["student_name"])
+                        app_gender = st.selectbox("⚧ Gender *", gender_opts, index=get_idx(gender_opts, existing["gender"]) if existing else 0)
+                        app_dob = st.date_input(
+                            "🎂 Date of Birth",
+                            value=existing["dob"] if (existing and existing["dob"]) else date(2002, 1, 1),
+                            min_value=date(1970, 1, 1),
+                            max_value=date.today()
+                        )
+                        app_category = st.selectbox("🏷️ Category *", cat_opts, index=get_idx(cat_opts, existing["category"]) if existing else 0)
+                    with fc2:
+                        app_education = st.selectbox("🎓 Education Qualification *", edu_opts, index=get_idx(edu_opts, existing["education"]) if existing else 0)
+                        app_marital = st.selectbox("💍 Marital Status *", marital_opts, index=get_idx(marital_opts, existing["marital_status"]) if existing else 0)
+                        app_mobile = st.text_input("📱 Student Mobile Number *", value=existing["mobile_number"] if existing else sel["mobile_number"])
+                        app_parent_mobile = st.text_input("👨‍👩‍👦 Parent's Mobile Number *", value=existing["parent_mobile"] if existing else "", placeholder="Enter parent's 10-digit mobile number")
+
+                    app_address = st.text_area("🏠 Residential Address", value=existing["address"] if existing else "", placeholder="Village/City, Mandal, District, Pincode")
+
+                    b1, b2 = st.columns([1, 1])
+                    save_app = b1.form_submit_button("💾 Save Application Form", type="primary", use_container_width=True)
+                    cancel_app = b2.form_submit_button("✖ Close Form", use_container_width=True)
+
+                if cancel_app:
+                    st.session_state.active_inquiry = None
+                    st.rerun()
+
+                if save_app:
+                    if not app_name or not app_mobile or not app_parent_mobile:
+                        st.warning("⚠️ Full Name, Student Mobile Number, and Parent's Mobile Number are required.")
+                    else:
+                        try:
+                            db = get_db_connection()
+                            cursor = db.cursor()
+                            cursor.execute("""
+                                INSERT INTO student_applications (
+                                    inquiry_id, course_name, full_name, gender, dob,
+                                    category, education, marital_status,
+                                    mobile_number, parent_mobile, address, submitted_by
+                                )
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON DUPLICATE KEY UPDATE
+                                    full_name = VALUES(full_name),
+                                    gender = VALUES(gender),
+                                    dob = VALUES(dob),
+                                    category = VALUES(category),
+                                    education = VALUES(education),
+                                    marital_status = VALUES(marital_status),
+                                    mobile_number = VALUES(mobile_number),
+                                    parent_mobile = VALUES(parent_mobile),
+                                    address = VALUES(address),
+                                    submitted_by = VALUES(submitted_by)
+                            """, (
+                                sel["inquiry_id"], assigned_course, app_name, app_gender, app_dob,
+                                app_category, app_education, app_marital,
+                                app_mobile, app_parent_mobile, app_address, fac["full_name"]
+                            ))
+                            db.commit()
+                            cursor.close()
+                            db.close()
+                            st.success(f"✅ Application saved for **{app_name}** ({assigned_course})!")
+                            st.session_state.active_inquiry = None
+                            st.rerun()
+                        except mysql.connector.Error as err:
+                            st.error(f"Database Error: {err}")
+
+    # --- TAB 2: FULL STUDENT APPLICATION DATA (COURSE-SPECIFIC TABLE) ---
+    with tab_full_data:
+        st.subheader(f"📄 Full Student Applications — {assigned_course}")
+        if not render_applications_table(applications):
+            st.info(f"No applications filled for **{assigned_course}** yet. Use the **📝 Fill Application** button in the first tab.")
+
+    # --- TAB 3: FACULTY PROFILE ---
     with tab_profile:
         st.subheader("👤 Faculty Details")
         col_pic, col_det = st.columns([1, 2.5], gap="large")
